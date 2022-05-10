@@ -194,6 +194,8 @@ class Job:
         escrow_addr: str = None,
         multi_credentials: List[Tuple] = [],
         retry: Retry = None,
+        hmt_server_addr: str = None,
+        hmtoken_addr: str = None,
     ):
         """Initializes a Job instance with values from a Manifest class and
         checks that the provided credentials are valid. An optional factory
@@ -286,6 +288,8 @@ class Job:
         self.gas_payer = Web3.toChecksumAddress(credentials["gas_payer"])
         self.gas_payer_priv = credentials["gas_payer_priv"]
         self.multi_credentials = self._validate_multi_credentials(multi_credentials)
+        self.hmt_server_addr = hmt_server_addr
+        self.hmtoken_addr = hmtoken_addr
 
         # Initialize a new Job.
         if not escrow_addr and escrow_manifest:
@@ -363,7 +367,7 @@ class Job:
 
         job_addr = self._last_escrow_addr()
         LOG.info("Job's escrow contract deployed to:{}".format(job_addr))
-        self.job_contract = get_escrow(job_addr)
+        self.job_contract = get_escrow(job_addr, self.hmt_server_addr)
 
         (hash_, manifest_url) = upload(self.serialized_manifest, pub_key)
         self.manifest_url = manifest_url
@@ -417,7 +421,10 @@ class Job:
         reputation_oracle = str(self.serialized_manifest["reputation_oracle_addr"])
         recording_oracle = str(self.serialized_manifest["recording_oracle_addr"])
         hmt_amount = int(self.amount * 10 ** 18)
-        hmtoken_contract = get_hmtoken()
+        hmtoken_address = (
+            HMTOKEN_ADDR if self.hmtoken_addr is None else self.hmtoken_addr
+        )
+        hmtoken_contract = get_hmtoken(hmtoken_address, self.hmt_server_addr)
 
         hmt_transferred = False
         contract_is_setup = False
@@ -435,13 +442,19 @@ class Job:
             txn_func = hmtoken_contract.functions.transfer
             func_args = [self.job_contract.address, hmt_amount]
 
-        balance = utils.get_hmt_balance(self.gas_payer, HMTOKEN_ADDR, get_w3())
+        balance = utils.get_hmt_balance(
+            self.gas_payer, hmtoken_address, get_w3(self.hmt_server_addr)
+        )
 
         # make sure there is enough HMT to fund the escrow
         if balance > hmt_amount:
             try:
                 handle_transaction_with_retry(
-                    txn_func, self.retry, *func_args, **txn_info
+                    txn_func,
+                    self.retry,
+                    *func_args,
+                    hmt_server_addr=self.hmt_server_addr,
+                    **txn_info,
                 )
                 hmt_transferred = True
             except Exception as e:
@@ -473,7 +486,13 @@ class Job:
         ]
 
         try:
-            handle_transaction_with_retry(txn_func, self.retry, *func_args, **txn_info)
+            handle_transaction_with_retry(
+                txn_func,
+                self.retry,
+                *func_args,
+                hmt_server_addr=self.hmt_server_addr,
+                **txn_info,
+            )
             contract_is_setup = True
         except Exception as e:
             LOG.debug(
@@ -535,7 +554,13 @@ class Job:
         func_args = [handlers]
 
         try:
-            handle_transaction_with_retry(txn_func, self.retry, *func_args, **txn_info)
+            handle_transaction_with_retry(
+                txn_func,
+                self.retry,
+                *func_args,
+                hmt_server_addr=self.hmt_server_addr,
+                **txn_info,
+            )
             return True
         except Exception as e:
             LOG.info(
@@ -632,7 +657,13 @@ class Job:
 
         func_args = [eth_addrs, hmt_amounts, url, hash_, 1]
         try:
-            handle_transaction_with_retry(txn_func, self.retry, *func_args, **txn_info)
+            handle_transaction_with_retry(
+                txn_func,
+                self.retry,
+                *func_args,
+                hmt_server_addr=self.hmt_server_addr,
+                **txn_info,
+            )
             return self._bulk_paid() == True
         except Exception as e:
             LOG.debug(
@@ -651,9 +682,6 @@ class Job:
     def abort(self, gas: int = GAS_LIMIT) -> bool:
         """Kills the contract and returns the HMT back to the gas payer.
         The contract cannot be aborted if the contract is in Partial, Paid or Complete state.
-
-        Returns:
-            bool: returns True if contract has been destroyed successfully.
 
         >>> credentials = {
         ... 	"gas_payer": "0x1413862C2B7054CDbfdc181B83962CB0FC11fD92",
@@ -723,7 +751,7 @@ class Job:
             bool: returns True if contract has been destroyed successfully.
 
         """
-        w3 = get_w3()
+        w3 = get_w3(self.hmt_server_addr)
         txn_event = "Job abortion"
         txn_func = self.job_contract.functions.abort
         txn_info = {
@@ -733,7 +761,13 @@ class Job:
         }
 
         try:
-            handle_transaction_with_retry(txn_func, self.retry, *[], **txn_info)
+            handle_transaction_with_retry(
+                txn_func,
+                self.retry,
+                *[],
+                hmt_server_addr=self.hmt_server_addr,
+                **txn_info,
+            )
             # After abort the contract should be destroyed
             return w3.eth.getCode(self.job_contract.address) == b""
         except Exception as e:
@@ -811,7 +845,13 @@ class Job:
         }
 
         try:
-            handle_transaction_with_retry(txn_func, self.retry, *[], **txn_info)
+            handle_transaction_with_retry(
+                txn_func,
+                self.retry,
+                *[],
+                hmt_server_addr=self.hmt_server_addr,
+                **txn_info,
+            )
             return self.status() == Status.Cancelled
         except Exception as e:
             LOG.info(
@@ -897,7 +937,13 @@ class Job:
         func_args = [url, hash_]
 
         try:
-            handle_transaction_with_retry(txn_func, self.retry, *func_args, **txn_info)
+            handle_transaction_with_retry(
+                txn_func,
+                self.retry,
+                *func_args,
+                hmt_server_addr=self.hmt_server_addr,
+                **txn_info,
+            )
             return True
         except Exception as e:
             LOG.info(
@@ -971,7 +1017,13 @@ class Job:
         }
 
         try:
-            handle_transaction_with_retry(txn_func, self.retry, *[], **txn_info)
+            handle_transaction_with_retry(
+                txn_func,
+                self.retry,
+                *[],
+                hmt_server_addr=self.hmt_server_addr,
+                **txn_info,
+            )
             return self.status() == Status.Complete
         except Exception as e:
             LOG.info(
@@ -1153,8 +1205,8 @@ class Job:
         gas_payer = credentials["gas_payer"]
         rep_oracle_priv_key = credentials["rep_oracle_priv_key"]
 
-        self.factory_contract = get_factory(factory_addr)
-        self.job_contract = get_escrow(escrow_addr)
+        self.factory_contract = get_factory(factory_addr, self.hmt_server_addr)
+        self.job_contract = get_escrow(escrow_addr, self.hmt_server_addr)
         self.manifest_url = manifest_url(self.job_contract, gas_payer)
         self.manifest_hash = manifest_hash(self.job_contract, gas_payer)
 
@@ -1296,7 +1348,9 @@ class Job:
             bool: returns True escrow belongs to the factory.
 
         """
-        factory_contract = get_factory(factory_addr)
+        factory_contract = get_factory(
+            factory_addr, hmt_server_addr=self.hmt_server_addr
+        )
         return factory_contract.functions.hasEscrow(escrow_addr).call(
             {"from": self.gas_payer, "gas": Wei(gas)}
         )
@@ -1339,13 +1393,18 @@ class Job:
         factory = None
 
         if not factory_addr_valid:
-            factory_addr = deploy_factory(GAS_LIMIT, **credentials)
-            factory = get_factory(factory_addr)
+            factory_addr = deploy_factory(
+                GAS_LIMIT, hmt_server_addr=self.hmt_server_addr, **credentials
+            )
+            factory = get_factory(factory_addr, hmt_server_addr=self.hmt_server_addr)
             if not factory_addr:
                 raise Exception("Unable to get address from factory")
 
         if not factory:
-            factory = get_factory(str(factory_addr))
+            factory = get_factory(
+                str(factory_addr), hmt_server_addr=self.hmt_server_addr
+            )
+
         return factory
 
     def _bulk_paid(self, gas: int = GAS_LIMIT) -> int:
@@ -1454,7 +1513,13 @@ class Job:
         func_args = [trusted_handlers]
 
         try:
-            handle_transaction_with_retry(txn_func, self.retry, *func_args, **txn_info)
+            handle_transaction_with_retry(
+                txn_func,
+                self.retry,
+                *func_args,
+                hmt_server_addr=self.hmt_server_addr,
+                **txn_info,
+            )
             return True
         except Exception as e:
             LOG.info(
@@ -1496,7 +1561,11 @@ class Job:
             }
             try:
                 handle_transaction_with_retry(
-                    txn_func, self.retry, *txn_args, **txn_info
+                    txn_func,
+                    self.retry,
+                    *txn_args,
+                    hmt_server_addr=self.hmt_server_addr,
+                    **txn_info,
                 )
                 self.gas_payer = gas_payer
                 self.gas_payer_priv = gas_payer_priv
@@ -1804,7 +1873,13 @@ class JobTestCase(unittest.TestCase):
             self.assertEqual(
                 handler_mock.call_args_list,
                 [
-                    call(txn_mock, gas_payer="1", gas_payer_priv="11", gas=6700000)
+                    call(
+                        txn_mock,
+                        gas_payer="1",
+                        gas_payer_priv="11",
+                        gas=6700000,
+                        hmt_server_addr=None,
+                    )
                     for i in range(5)
                 ],
             )
@@ -1830,7 +1905,15 @@ class JobTestCase(unittest.TestCase):
             self.assertFalse(success)
             self.assertEqual(
                 handler_mock.call_args_list,
-                [call(txn_mock, gas_payer="1", gas_payer_priv="11", gas=6700000)],
+                [
+                    call(
+                        txn_mock,
+                        gas_payer="1",
+                        gas_payer_priv="11",
+                        gas=6700000,
+                        hmt_server_addr=None,
+                    )
+                ],
             )
             self.assertEqual(sleep_mock.call_args_list, [])
 
